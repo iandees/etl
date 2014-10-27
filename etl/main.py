@@ -110,6 +110,15 @@ class EsriRestExtractionTask(ExtractionTask):
                     [geom[0], geom[1]] for geom in esri_feature['geometry']['points']
                 ]
             }
+        elif geom_type == 'esriGeometryPolygon':
+            geometry = {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [geom[0], geom[1]] for geom in ring
+                    ] for ring in esri_feature['geometry']['rings']
+                ]
+            }
         else:
             raise KeyError("Don't know how to convert esri geometry type {}".format(geom_type))
 
@@ -156,14 +165,22 @@ class EsriRestExtractionTask(ExtractionTask):
                     try:
                         req = urllib2.Request(query_url, headers=headers)
                         resp = urllib2.urlopen(req, timeout=10)
+                        data = json.load(resp)
                     except urllib2.URLError as e:
                         raise ExtractionError("Could not connect to URL", e)
                     except socket.timeout as e:
                         raise ExtractionError("Timeout when connecting to URL", e)
+                    except ValueError as e:
+                        raise ExtractionError("Could not parse JSON", e)
+                    finally:
+                        # Wipe out whatever we had written out so far
+                        f.truncate()
 
-                    data = json.load(resp)
+                    error = data.get('error')
+                    if error:
+                        raise ExtractionError("Problem querying ESRI dataset: %s", error['message'])
+
                     geometry_type = data.get('geometryType')
-
                     features = data.get('features')
 
                     f.write(',\n'.join([
@@ -253,6 +270,8 @@ class ConvertToCsvTask(object):
             in_layer = in_datasource.GetLayer()
             inSpatialRef = in_layer.GetSpatialRef()
 
+            self.logger.info("Converting a layer to CSV: %s", in_layer)
+
             in_layer_defn = in_layer.GetLayerDefn()
             out_fieldnames = []
             for i in range(0, in_layer_defn.GetFieldCount()):
@@ -311,8 +330,13 @@ for dirpath, dirnames, filenames in os.walk('/Users/iandees/Workspace/addresses/
                 if skip(source_key): continue
 
                 # Download the source data
+                source_type = source_data.get('type')
+                if not source_type:
+                    logger.error("Source %s does not have a type set", source_key)
+                    continue
+
                 try:
-                    task = ExtractionTask.from_type_string(source_data.get('type'))
+                    task = ExtractionTask.from_type_string(source_type)
 
                     data_urls = source_data.get('data')
                     if not isinstance(data_urls, list):
